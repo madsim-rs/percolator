@@ -3,8 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::msg::*;
-use crate::service::*;
-use crate::*;
 
 // TTL is used for a lock key.
 // If the key's lifetime exceeds this value, it should be cleaned up.
@@ -16,10 +14,9 @@ pub struct TimestampOracle {
     // You definitions here if needed.
 }
 
-#[async_trait::async_trait]
-impl timestamp::Service for TimestampOracle {
+impl TimestampOracle {
     // example get_timestamp RPC handler.
-    async fn get_timestamp(&self, _: TimestampRequest) -> labrpc::Result<TimestampResponse> {
+    async fn get_timestamp(&self, _: TimestampRequest) -> TimestampResponse {
         // Your code here.
         unimplemented!()
     }
@@ -89,22 +86,21 @@ pub struct MemoryStorage {
     data: Arc<Mutex<KvTable>>,
 }
 
-#[async_trait::async_trait]
-impl transaction::Service for MemoryStorage {
+impl MemoryStorage {
     // example get RPC handler.
-    async fn get(&self, req: GetRequest) -> labrpc::Result<GetResponse> {
+    async fn get(&self, req: GetRequest) -> GetResponse {
         // Your code here.
         unimplemented!()
     }
 
     // example prewrite RPC handler.
-    async fn prewrite(&self, req: PrewriteRequest) -> labrpc::Result<PrewriteResponse> {
+    async fn prewrite(&self, req: PrewriteRequest) -> PrewriteResponse {
         // Your code here.
         unimplemented!()
     }
 
     // example commit RPC handler.
-    async fn commit(&self, req: CommitRequest) -> labrpc::Result<CommitResponse> {
+    async fn commit(&self, req: CommitRequest) -> CommitResponse {
         // Your code here.
         unimplemented!()
     }

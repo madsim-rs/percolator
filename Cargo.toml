@@ -1,24 +1,11 @@
 [package]
 name = "percolator"
 version = "0.1.0"
-authors = ["Ryan Leung <rleungx@gmail.com>"]
-edition = "2018"
-build = "build.rs"
-publish = false
+authors = ["Ryan Leung <rleungx@gmail.com>", "Runji Wang <wangrunji0408@163.com>"]
+edition = "2021"
 
 [dependencies]
-async-trait = "0.1"
 futures = "0.3"
-futures-timer = "3.0"
 log = "0.4"
-prost = "0.6"
-prost-derive = "0.6"
-
-labrpc = { path = "../labrpc" }
-labcodec = { path = "../labcodec" }
-
-[build-dependencies]
-prost-build = "0.6"
-
-[dev-dependencies]
-env_logger = "0.7"
+madsim = { version = "0.1", features = ["rpc", "macros", "logger"] }
+serde = { version = "1.0", features = ["derive"] }
