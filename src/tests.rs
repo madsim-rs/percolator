@@ -19,11 +19,13 @@ impl Tester {
         let txn_addr = "0.0.0.2:1".parse().unwrap();
 
         handle
-            .local_handle(tso_addr)
+            .create_host(tso_addr)
+            .unwrap()
             .spawn(async { TimestampOracle::default() })
             .await;
         handle
-            .local_handle(txn_addr)
+            .create_host(txn_addr)
+            .unwrap()
             .spawn(async { MemoryStorage::default() })
             .await;
 
