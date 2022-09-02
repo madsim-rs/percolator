@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::io::Result;
 use std::net::SocketAddr;
 
+use madsim::net::Endpoint;
+
 use crate::msg::*;
 
 // BACKOFF_TIME_MS is the wait time before retrying to send the request.
@@ -20,6 +22,7 @@ const RETRY_TIMES: usize = 3;
 /// The other is do the transaction logic.
 #[derive(Clone)]
 pub struct Client {
+    ep: Endpoint,
     tso_addr: SocketAddr,
     txn_addr: SocketAddr,
     start_ts: Option<u64>,
@@ -31,19 +34,19 @@ type Value = Vec<u8>;
 
 impl Client {
     /// Creates a new Client.
-    pub fn new(tso_addr: SocketAddr, txn_addr: SocketAddr) -> Client {
-        Client {
+    pub async fn new(tso_addr: SocketAddr, txn_addr: SocketAddr) -> Result<Client> {
+        Ok(Client {
+            ep: Endpoint::bind("0.0.0.0:0").await?,
             tso_addr,
             txn_addr,
             start_ts: None,
             write_set: BTreeMap::new(),
-        }
+        })
     }
 
     /// Gets a timestamp from a TSO.
     pub async fn get_timestamp(&self) -> Result<u64> {
-        let net = madsim::net::NetLocalHandle::current();
-        let rsp = net.call(self.tso_addr, TimestampRequest {}).await?;
+        let rsp = self.ep.call(self.tso_addr, TimestampRequest {}).await?;
         Ok(rsp.ts)
     }
 
@@ -61,8 +64,7 @@ impl Client {
             start_ts: self.start_ts.expect("no transaction"),
             key: key.into(),
         };
-        let net = madsim::net::NetLocalHandle::current();
-        let rsp = net.call(self.txn_addr, req).await?;
+        let rsp = self.ep.call(self.txn_addr, req).await?;
         Ok(rsp.unwrap().unwrap_or_default())
     }
 
@@ -80,8 +82,7 @@ impl Client {
         let start_ts = self.start_ts.expect("no transaction");
 
         // Get commit timestamp
-        let net = madsim::net::NetLocalHandle::current();
-        let rsp = net.call(self.tso_addr, TimestampRequest {}).await?;
+        let rsp = self.ep.call(self.tso_addr, TimestampRequest {}).await?;
         let commit_ts = rsp.ts;
 
         // PreWrite phase
@@ -94,7 +95,7 @@ impl Client {
                 value: value.clone(),
                 primary_key: primary_key.clone(),
             };
-            let rsp = net.call(self.txn_addr, req).await?;
+            let rsp = self.ep.call(self.txn_addr, req).await?;
             if rsp.is_err() {
                 return Ok(false);
             }
@@ -108,7 +109,7 @@ impl Client {
                 key: key.clone(),
                 is_primary: key == primary_key,
             };
-            let rsp = net.call(self.txn_addr, req).await?;
+            let rsp = self.ep.call(self.txn_addr, req).await?;
             if rsp.is_err() {
                 return Ok(false);
             }

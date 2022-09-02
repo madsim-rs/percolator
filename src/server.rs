@@ -11,27 +11,13 @@ use crate::msg::*;
 // Otherwise, the operation should back off.
 const TTL: u64 = Duration::from_millis(100).as_nanos() as u64;
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct TimestampOracle {
     next_ts: Arc<AtomicU64>,
 }
 
-impl Default for TimestampOracle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[madsim::service]
 impl TimestampOracle {
-    pub fn new() -> Self {
-        let tso = TimestampOracle {
-            next_ts: Default::default(),
-        };
-        tso.add_rpc_handler();
-        tso
-    }
-
     // example get_timestamp RPC handler.
     #[rpc]
     async fn get_timestamp(&self, _: TimestampRequest) -> TimestampResponse {
@@ -129,27 +115,13 @@ impl KvTable {
 
 // MemoryStorage is used to wrap a KvTable.
 // You may need to get a snapshot from it.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct MemoryStorage {
     table: Arc<Mutex<KvTable>>,
 }
 
-impl Default for MemoryStorage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[madsim::service]
 impl MemoryStorage {
-    pub fn new() -> Self {
-        let s = MemoryStorage {
-            table: Default::default(),
-        };
-        s.add_rpc_handler();
-        s
-    }
-
     #[rpc]
     async fn get(&self, req: GetRequest) -> Result<Option<Vec<u8>>, GetError> {
         let table = self.table.lock().unwrap();
