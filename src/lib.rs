@@ -8,5 +8,5 @@ mod client;
 mod msg;
 #[allow(unused)]
 mod server;
-#[cfg(test)]
+#[cfg(all(test, madsim))]
 mod tests;

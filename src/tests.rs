@@ -1,5 +1,6 @@
-use madsim::{task, time, Handle};
+use madsim::{runtime::Handle, task, time};
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::client::Client;
 use crate::server::{MemoryStorage, TimestampOracle};
@@ -15,23 +16,31 @@ impl Tester {
     async fn new(num_client: usize) -> Self {
         let handle = Handle::current();
 
-        let tso_addr = "0.0.0.1:1".parse().unwrap();
-        let txn_addr = "0.0.0.2:1".parse().unwrap();
+        let tso_addr = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
+        let txn_addr = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
 
         handle
-            .create_host(tso_addr)
-            .unwrap()
-            .spawn(async { TimestampOracle::default() })
-            .await;
+            .create_node()
+            .ip(tso_addr.ip())
+            .init(|| async {
+                TimestampOracle::default()
+                    .serve("0.0.0.0:1".parse().unwrap())
+                    .await
+            })
+            .build();
         handle
-            .create_host(txn_addr)
-            .unwrap()
-            .spawn(async { MemoryStorage::default() })
-            .await;
+            .create_node()
+            .ip(txn_addr.ip())
+            .init(|| async {
+                MemoryStorage::default()
+                    .serve("0.0.0.0:1".parse().unwrap())
+                    .await
+            })
+            .build();
 
         let mut clients = vec![];
         for _ in 0..num_client {
-            clients.push(Client::new(tso_addr, txn_addr));
+            clients.push(Client::new(tso_addr, txn_addr).await.unwrap());
         }
         Tester {
             handle,
@@ -91,7 +100,7 @@ async fn test_get_timestamp_under_unreliable_network() {
     t.enable_client(2);
 
     for child in children {
-        child.await;
+        child.await.unwrap();
     }
 }
 
