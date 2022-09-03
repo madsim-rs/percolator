@@ -6,7 +6,11 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3"
-log = "0.4"
-thiserror = "1"
 madsim = "0.2"
 serde = { version = "1.0", features = ["derive"] }
+spin = "0.9"
+thiserror = "1"
+tracing = "0.1"
+
+[patch.crates-io]
+madsim = { path = "../madsim/madsim" }

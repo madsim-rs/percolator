@@ -20,7 +20,6 @@ const RETRY_TIMES: usize = 3;
 /// Client mainly has two purposes:
 /// One is getting a monotonically increasing timestamp from TSO (Timestamp Oracle).
 /// The other is do the transaction logic.
-#[derive(Clone)]
 pub struct Client {
     ep: Endpoint,
     tso_addr: SocketAddr,
@@ -47,11 +46,13 @@ impl Client {
     /// Gets a timestamp from a TSO.
     pub async fn get_timestamp(&self) -> Result<u64> {
         let rsp = self.ep.call(self.tso_addr, TimestampRequest {}).await?;
+        tracing::info!(ts = rsp.ts, "get_timestamp");
         Ok(rsp.ts)
     }
 
     /// Begins a new transaction.
     pub async fn begin(&mut self) {
+        tracing::info!("begin");
         assert!(self.start_ts.is_none(), "transaction already begin");
         let start_ts = self.get_timestamp().await.unwrap();
         self.start_ts = Some(start_ts);
@@ -65,16 +66,20 @@ impl Client {
             key: key.into(),
         };
         let rsp = self.ep.call(self.txn_addr, req).await?;
-        Ok(rsp.unwrap().unwrap_or_default())
+        let value = rsp.unwrap().unwrap_or_default();
+        tracing::info!(?key, ?value, "get");
+        Ok(value)
     }
 
     /// Sets keys in a buffer until commit time.
     pub async fn set(&mut self, key: &[u8], value: &[u8]) {
+        tracing::info!(?key, ?value, "set");
         self.write_set.insert(key.into(), value.into());
     }
 
     /// Commits a transaction.
     pub async fn commit(&self) -> Result<bool> {
+        tracing::info!("commit");
         if self.write_set.is_empty() {
             // read-only transaction
             return Ok(true);

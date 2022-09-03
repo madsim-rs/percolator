@@ -1,94 +1,191 @@
-use madsim::{runtime::Handle, task, time};
+use madsim::{
+    net::rpc::Request,
+    runtime::{Handle, NodeHandle},
+    task, time,
+};
+use spin::Mutex;
+use std::io;
 use std::net::SocketAddr;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use crate::client::Client;
+use crate::msg;
 use crate::server::{MemoryStorage, TimestampOracle};
 
 struct Tester {
-    handle: Handle,
-    tso_addr: SocketAddr,
-    txn_addr: SocketAddr,
-    clients: Vec<Client>,
+    clients: Vec<TestClient>,
+    hooks: Arc<CommitHooks>,
+}
+
+#[derive(Debug, Default)]
+struct CommitHooks {
+    drop_req: AtomicBool,
+    drop_resp: AtomicBool,
+    fail_primary: AtomicBool,
+}
+
+impl CommitHooks {
+    fn hook_req(&self, req: &msg::CommitRequest) -> bool {
+        if self.drop_req.load(Ordering::Relaxed) {
+            if !req.is_primary || self.fail_primary.load(Ordering::Relaxed) {
+                tracing::debug!("drop a commit request");
+                return false;
+            }
+        }
+        true
+    }
+
+    fn hook_rsp(&self, _: &<msg::CommitRequest as Request>::Response) -> bool {
+        if self.drop_resp.load(Ordering::Relaxed) {
+            tracing::debug!("drop a commit response");
+            return false;
+        }
+        true
+    }
 }
 
 impl Tester {
     async fn new(num_client: usize) -> Self {
         let handle = Handle::current();
 
-        let tso_addr = "10.0.0.1:1".parse::<SocketAddr>().unwrap();
-        let txn_addr = "10.0.0.2:1".parse::<SocketAddr>().unwrap();
+        let tso_addr = "10.0.1.1:1".parse::<SocketAddr>().unwrap();
+        let txn_addr = "10.0.1.2:1".parse::<SocketAddr>().unwrap();
 
         handle
             .create_node()
+            .name("tso")
             .ip(tso_addr.ip())
-            .init(|| async {
-                TimestampOracle::default()
-                    .serve("0.0.0.0:1".parse().unwrap())
-                    .await
-            })
+            .init(move || TimestampOracle::default().serve(tso_addr))
             .build();
         handle
             .create_node()
+            .name("txn")
             .ip(txn_addr.ip())
-            .init(|| async {
-                MemoryStorage::default()
-                    .serve("0.0.0.0:1".parse().unwrap())
-                    .await
-            })
+            .init(move || MemoryStorage::default().serve(txn_addr))
             .build();
 
+        let net = madsim::net::NetSim::current();
+        let hooks = Arc::new(CommitHooks::default());
         let mut clients = vec![];
-        for _ in 0..num_client {
-            clients.push(Client::new(tso_addr, txn_addr).await.unwrap());
+        for i in 1..=num_client {
+            let node = handle
+                .create_node()
+                .name(format!("client-{i}"))
+                .ip([10, 0, 0, i as u8].into())
+                .build();
+            let client = Arc::new(Mutex::new(
+                node.spawn(Client::new(tso_addr, txn_addr))
+                    .await
+                    .unwrap()
+                    .expect("failed to create client"),
+            ));
+            let hooks1 = hooks.clone();
+            let hooks2 = hooks.clone();
+            net.hook_rpc_req(node.id(), move |req| hooks1.hook_req(req));
+            net.hook_rpc_rsp(node.id(), move |rsp| hooks2.hook_rsp(rsp));
+            clients.push(TestClient { node, client });
         }
-        Tester {
-            handle,
-            tso_addr,
-            txn_addr,
-            clients,
-        }
+        Tester { clients, hooks }
     }
 
-    fn client(&self, i: usize) -> Client {
+    fn client(&self, i: usize) -> TestClient {
         self.clients[i].clone()
     }
 
     fn enable_client(&self, i: usize) {
-        todo!()
+        tracing::info!(i, "enable client");
+        let net = madsim::net::NetSim::current();
+        net.unclog_node(self.clients[i].node.id());
     }
 
     fn disable_client(&self, i: usize) {
-        todo!()
+        tracing::info!(i, "disable client");
+        let net = madsim::net::NetSim::current();
+        net.clog_node(self.clients[i].node.id());
     }
 
     fn drop_req(&self) {
-        todo!()
+        tracing::info!("set drop request");
+        self.hooks.drop_req.store(true, Ordering::Relaxed);
     }
+
     fn drop_resp(&self) {
-        todo!()
+        tracing::info!("set drop response");
+        self.hooks.drop_resp.store(true, Ordering::Relaxed);
     }
+
     fn fail_primary(&self) {
-        todo!()
+        tracing::info!("set fail primary");
+        self.hooks.fail_primary.store(true, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone)]
+struct TestClient {
+    node: NodeHandle,
+    client: Arc<Mutex<Client>>,
+}
+
+impl TestClient {
+    async fn get_timestamp(&self) -> io::Result<u64> {
+        let client = self.client.clone();
+        self.node
+            .spawn(async move { client.lock().get_timestamp().await })
+            .await
+            .unwrap()
+    }
+    async fn begin(&mut self) {
+        let client = self.client.clone();
+        self.node
+            .spawn(async move { client.lock().begin().await })
+            .await
+            .unwrap()
+    }
+    async fn get(&self, key: &[u8]) -> io::Result<Vec<u8>> {
+        let client = self.client.clone();
+        let key = key.to_vec();
+        self.node
+            .spawn(async move { client.lock().get(&key).await })
+            .await
+            .unwrap()
+    }
+    async fn set(&mut self, key: &[u8], value: &[u8]) {
+        let client = self.client.clone();
+        let key = key.to_vec();
+        let value = value.to_vec();
+        self.node
+            .spawn(async move { client.lock().set(&key, &value).await })
+            .await
+            .unwrap()
+    }
+    async fn commit(&self) -> io::Result<bool> {
+        let client = self.client.clone();
+        self.node
+            .spawn(async move { client.lock().commit().await })
+            .await
+            .unwrap()
     }
 }
 
 #[madsim::test]
 async fn test_get_timestamp_under_unreliable_network() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
     let mut children = vec![];
 
     for i in 0..3 {
         let client = t.client(i);
         t.disable_client(i);
         children.push(task::spawn(async move {
-            let res = client.get_timestamp();
-            // FIXME
-            // if i == 2 {
-            //     assert_eq!(res, Err(Error::Timeout));
-            // } else {
-            //     assert!(res.is_ok());
-            // }
+            let res = client.get_timestamp().await;
+            if i == 2 {
+                assert_eq!(res.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+            } else {
+                assert!(res.is_ok());
+            }
         }));
     }
 
@@ -107,7 +204,7 @@ async fn test_get_timestamp_under_unreliable_network() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#predicate-many-preceders-pmp
 #[madsim::test]
 async fn test_predicate_many_preceders_read_predicates() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -130,7 +227,7 @@ async fn test_predicate_many_preceders_read_predicates() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#predicate-many-preceders-pmp
 #[madsim::test]
 async fn test_predicate_many_preceders_write_predicates() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -156,7 +253,7 @@ async fn test_predicate_many_preceders_write_predicates() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#lost-update-p4
 #[madsim::test]
 async fn test_lost_update() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -182,7 +279,7 @@ async fn test_lost_update() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#read-skew-g-single
 #[madsim::test]
 async fn test_read_skew_read_only() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -210,7 +307,7 @@ async fn test_read_skew_read_only() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#read-skew-g-single
 #[madsim::test]
 async fn test_read_skew_predicate_dependencies() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -236,7 +333,7 @@ async fn test_read_skew_predicate_dependencies() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#read-skew-g-single
 #[madsim::test]
 async fn test_read_skew_write_predicate() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -265,7 +362,7 @@ async fn test_read_skew_write_predicate() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#write-skew-g2-item
 #[madsim::test]
 async fn test_write_skew() {
-    let mut t = Tester::new(3).await;
+    let t = Tester::new(3).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
@@ -294,7 +391,7 @@ async fn test_write_skew() {
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#anti-dependency-cycles-g2
 #[madsim::test]
 async fn test_anti_dependency_cycles() {
-    let mut t = Tester::new(4).await;
+    let t = Tester::new(4).await;
 
     let mut client0 = t.client(0);
     client0.begin().await;
