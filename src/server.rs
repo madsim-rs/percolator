@@ -9,7 +9,7 @@ use crate::msg::*;
 // TTL is used for a lock key.
 // If the key's lifetime exceeds this value, it should be cleaned up.
 // Otherwise, the operation should back off.
-const TTL: u64 = Duration::from_millis(100).as_nanos() as u64;
+const TTL: Duration = Duration::from_millis(100);
 
 #[derive(Default, Clone)]
 pub struct TimestampOracle {
@@ -77,16 +77,29 @@ impl KvTable {
         &self,
         key: Vec<u8>,
         column: Column,
-        ts_start_inclusive: Option<u64>,
-        ts_end_inclusive: Option<u64>,
+        ts_range: impl RangeBounds<u64>,
     ) -> Option<(&Key, &Value)> {
         let map = match column {
             Column::Write => &self.write,
             Column::Data => &self.data,
             Column::Lock => &self.lock,
         };
-        let start = (key.clone(), ts_start_inclusive.unwrap_or(0));
-        let end = (key, ts_end_inclusive.unwrap_or(u64::MAX));
+        let start = (
+            key.clone(),
+            match ts_range.start_bound() {
+                Bound::Included(ts) => *ts,
+                Bound::Excluded(ts) => *ts + 1,
+                Bound::Unbounded => 0,
+            },
+        );
+        let end = (
+            key,
+            match ts_range.end_bound() {
+                Bound::Included(ts) => *ts,
+                Bound::Excluded(ts) => *ts - 1,
+                Bound::Unbounded => u64::MAX,
+            },
+        );
         map.range(start..=end).next_back()
     }
 
@@ -125,16 +138,16 @@ impl MemoryStorage {
     #[rpc]
     async fn get(&self, req: GetRequest) -> Result<Option<Vec<u8>>, GetError> {
         let table = self.table.lock().unwrap();
-        let lock = table.read(req.key.clone(), Column::Lock, None, Some(req.start_ts));
+        let lock = table.read(req.key.clone(), Column::Lock, ..=req.start_ts);
         if let Some((&(_, ts), _)) = lock {
             return Err(GetError::IsLocked { ts });
         }
-        let ts = match table.read(req.key.clone(), Column::Write, None, Some(req.start_ts)) {
+        let ts = match table.read(req.key.clone(), Column::Write, ..=req.start_ts) {
             Some((_, v)) => v.as_ts(),
             None => return Ok(None),
         };
         let value = table
-            .read(req.key, Column::Data, Some(ts), Some(ts))
+            .read(req.key, Column::Data, ts..=ts)
             .unwrap()
             .1
             .as_bytes();
@@ -144,11 +157,11 @@ impl MemoryStorage {
     #[rpc]
     async fn prewrite(&self, req: PrewriteRequest) -> Result<(), PrewriteError> {
         let mut table = self.table.lock().unwrap();
-        let write = table.read(req.key.clone(), Column::Write, Some(req.start_ts), None);
+        let write = table.read(req.key.clone(), Column::Write, req.start_ts..);
         if let Some((&(_, ts), _)) = write {
             return Err(PrewriteError::WriteConflict { ts });
         }
-        let lock = table.read(req.key.clone(), Column::Lock, None, None);
+        let lock = table.read(req.key.clone(), Column::Lock, ..);
         if let Some((&(_, ts), _)) = lock {
             return Err(PrewriteError::IsLocked { ts });
         }

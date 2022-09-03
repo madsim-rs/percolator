@@ -23,15 +23,15 @@ struct Tester {
 
 #[derive(Debug, Default)]
 struct CommitHooks {
-    drop_req: AtomicBool,
+    drop_primary_req: AtomicBool,
+    drop_secondary_req: AtomicBool,
     drop_resp: AtomicBool,
-    fail_primary: AtomicBool,
 }
 
 impl CommitHooks {
     fn hook_req(&self, req: &msg::CommitRequest) -> bool {
-        if self.drop_req.load(Ordering::Relaxed) {
-            if !req.is_primary || self.fail_primary.load(Ordering::Relaxed) {
+        if self.drop_secondary_req.load(Ordering::Relaxed) {
+            if !req.is_primary || self.drop_primary_req.load(Ordering::Relaxed) {
                 tracing::debug!("drop a commit request");
                 return false;
             }
@@ -108,19 +108,19 @@ impl Tester {
         net.clog_node(self.clients[i].node.id());
     }
 
-    fn drop_req(&self) {
-        tracing::info!("set drop request");
-        self.hooks.drop_req.store(true, Ordering::Relaxed);
+    fn drop_commit_primary_req(&self) {
+        tracing::info!("set drop commit primary request");
+        self.hooks.drop_primary_req.store(true, Ordering::Relaxed);
     }
 
-    fn drop_resp(&self) {
-        tracing::info!("set drop response");
+    fn drop_commit_secondary_request(&self) {
+        tracing::info!("set drop commit secondary request");
+        self.hooks.drop_secondary_req.store(true, Ordering::Relaxed);
+    }
+
+    fn drop_commit_response(&self) {
+        tracing::info!("set drop commit response");
         self.hooks.drop_resp.store(true, Ordering::Relaxed);
-    }
-
-    fn fail_primary(&self) {
-        tracing::info!("set fail primary");
-        self.hooks.fail_primary.store(true, Ordering::Relaxed);
     }
 }
 
@@ -418,7 +418,7 @@ async fn test_anti_dependency_cycles() {
 }
 
 #[madsim::test]
-async fn test_commit_primary_drop_secondary_requests() {
+async fn test_commit_primary_drop_secondary_reqs() {
     let t = Tester::new(2).await;
 
     let mut client0 = t.client(0);
@@ -426,7 +426,7 @@ async fn test_commit_primary_drop_secondary_requests() {
     client0.set(b"3", b"30").await;
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
-    t.drop_req();
+    t.drop_commit_secondary_request();
     assert_eq!(client0.commit().await.unwrap(), true);
 
     let mut client1 = t.client(1);
@@ -445,7 +445,7 @@ async fn test_commit_primary_success() {
     client0.set(b"3", b"30").await;
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
-    t.drop_req();
+    t.drop_commit_secondary_request();
     assert_eq!(client0.commit().await.unwrap(), true);
 
     let mut client1 = t.client(1);
@@ -464,7 +464,7 @@ async fn test_commit_primary_success_without_response() {
     client0.set(b"3", b"30").await;
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
-    t.drop_resp();
+    t.drop_commit_response();
     assert!(client0.commit().await.is_err());
 
     let mut client1 = t.client(1);
@@ -483,8 +483,8 @@ async fn test_commit_primary_fail() {
     client0.set(b"3", b"30").await;
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
-    t.drop_req();
-    t.fail_primary();
+    t.drop_commit_secondary_request();
+    t.drop_commit_primary_req();
     assert_eq!(client0.commit().await.unwrap(), false);
 
     let mut client1 = t.client(1);

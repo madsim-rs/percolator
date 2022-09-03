@@ -119,9 +119,9 @@ impl Client {
                 key: key.clone(),
                 is_primary: key == primary_key,
             };
-            let rsp = self.call_with_retry(self.txn_addr, req).await?;
-            if rsp.is_err() {
-                return Ok(false);
+            match self.call_with_retry(self.txn_addr, req).await {
+                Err(_) | Ok(Err(_)) => return Ok(false),
+                _ => {}
             }
         }
 
