@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::Result;
 use std::net::SocketAddr;
+use std::time::Duration;
 
+use madsim::net::rpc::Request;
 use madsim::net::Endpoint;
 
 use crate::msg::*;
@@ -45,7 +48,8 @@ impl Client {
 
     /// Gets a timestamp from a TSO.
     pub async fn get_timestamp(&self) -> Result<u64> {
-        let rsp = self.ep.call(self.tso_addr, TimestampRequest {}).await?;
+        let req = || TimestampRequest {};
+        let rsp = self.call_with_retry(self.tso_addr, req).await?;
         tracing::info!(ts = rsp.ts, "get_timestamp");
         Ok(rsp.ts)
     }
@@ -61,11 +65,11 @@ impl Client {
 
     /// Gets the value for a given key.
     pub async fn get(&self, key: &[u8]) -> Result<Value> {
-        let req = GetRequest {
+        let req = || GetRequest {
             start_ts: self.start_ts.expect("no transaction"),
             key: key.into(),
         };
-        let rsp = self.ep.call(self.txn_addr, req).await?;
+        let rsp = self.call_with_retry(self.txn_addr, req).await?;
         let value = rsp.unwrap().unwrap_or_default();
         tracing::info!(?key, ?value, "get");
         Ok(value)
@@ -87,20 +91,21 @@ impl Client {
         let start_ts = self.start_ts.expect("no transaction");
 
         // Get commit timestamp
-        let rsp = self.ep.call(self.tso_addr, TimestampRequest {}).await?;
+        let req = || TimestampRequest {};
+        let rsp = self.call_with_retry(self.tso_addr, req).await?;
         let commit_ts = rsp.ts;
 
         // PreWrite phase
         // first key is primary
         let primary_key = self.write_set.keys().next().unwrap();
         for (key, value) in &self.write_set {
-            let req = PrewriteRequest {
+            let req = || PrewriteRequest {
                 start_ts,
                 key: key.clone(),
                 value: value.clone(),
                 primary_key: primary_key.clone(),
             };
-            let rsp = self.ep.call(self.txn_addr, req).await?;
+            let rsp = self.call_with_retry(self.txn_addr, req).await?;
             if rsp.is_err() {
                 return Ok(false);
             }
@@ -108,18 +113,35 @@ impl Client {
 
         // Commit phase
         for (key, value) in &self.write_set {
-            let req = CommitRequest {
+            let req = || CommitRequest {
                 start_ts,
                 commit_ts,
                 key: key.clone(),
                 is_primary: key == primary_key,
             };
-            let rsp = self.ep.call(self.txn_addr, req).await?;
+            let rsp = self.call_with_retry(self.txn_addr, req).await?;
             if rsp.is_err() {
                 return Ok(false);
             }
         }
 
         Ok(true)
+    }
+
+    async fn call_with_retry<F, R>(&self, dst: SocketAddr, mut request: F) -> Result<R::Response>
+    where
+        F: FnMut() -> R,
+        R: Request,
+    {
+        let mut timeout = Duration::from_millis(BACKOFF_TIME_MS);
+        let mut last_err = None;
+        for _ in 0..RETRY_TIMES {
+            match self.ep.call_timeout(dst, request(), timeout).await {
+                Ok(rsp) => return Ok(rsp),
+                Err(e) => last_err = Some(e),
+            }
+            timeout *= 2;
+        }
+        Err(last_err.unwrap())
     }
 }
