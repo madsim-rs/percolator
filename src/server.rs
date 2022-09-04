@@ -1,8 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use itertools::Itertools;
 
 use crate::msg::*;
 
@@ -126,6 +129,47 @@ impl KvTable {
     }
 }
 
+impl Display for KvTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut map = BTreeMap::<&[u8], BTreeMap<u64, (_, _, _)>>::new();
+        for ((key, ts), value) in &self.data {
+            map.entry(key).or_default().entry(*ts).or_default().0 = Some(value);
+        }
+        for ((key, ts), value) in &self.lock {
+            map.entry(key).or_default().entry(*ts).or_default().1 = Some(value);
+        }
+        for ((key, ts), value) in &self.write {
+            map.entry(key).or_default().entry(*ts).or_default().2 = Some(value);
+        }
+
+        let mut table = comfy_table::Table::new();
+        table.set_header(vec!["Key", "Data", "Lock", "Write"]);
+        for (key, map) in map {
+            let value_to_string = |ts: u64, v: Option<&Value>| match v {
+                Some(Value::Timestamp(t)) => format!("{ts}: data@{t}"),
+                Some(Value::Vector(v)) => format!("{ts}: {}", String::from_utf8_lossy(v)),
+                None => format!(""),
+            };
+            table.add_row(vec![
+                String::from_utf8_lossy(key).to_string(),
+                map.iter()
+                    .rev()
+                    .map(|(ts, (v, _, _))| value_to_string(*ts, *v))
+                    .join("\n"),
+                map.iter()
+                    .rev()
+                    .map(|(ts, (_, v, _))| value_to_string(*ts, *v))
+                    .join("\n"),
+                map.iter()
+                    .rev()
+                    .map(|(ts, (_, _, v))| value_to_string(*ts, *v))
+                    .join("\n"),
+            ]);
+        }
+        write!(f, "{table}")
+    }
+}
+
 // MemoryStorage is used to wrap a KvTable.
 // You may need to get a snapshot from it.
 #[derive(Default, Clone)]
@@ -177,6 +221,7 @@ impl MemoryStorage {
             req.start_ts,
             Value::Vector(req.primary_key),
         );
+        tracing::debug!("prewrite\n{}", table);
         Ok(())
     }
 
@@ -190,6 +235,7 @@ impl MemoryStorage {
             Value::Timestamp(req.start_ts),
         );
         table.erase(req.key.clone(), Column::Lock, req.start_ts);
+        tracing::debug!("commit\n{}", table);
         Ok(())
     }
 

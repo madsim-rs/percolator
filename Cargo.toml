@@ -5,7 +5,9 @@ authors = ["Ryan Leung <rleungx@gmail.com>", "Runji Wang <wangrunji0408@163.com>
 edition = "2021"
 
 [dependencies]
+comfy-table = "6"
 futures = "0.3"
+itertools = "0.10"
 madsim = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 spin = "0.9"

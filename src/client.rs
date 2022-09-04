@@ -71,13 +71,21 @@ impl Client {
         };
         let rsp = self.call_with_retry(self.txn_addr, req).await?;
         let value = rsp.unwrap().unwrap_or_default();
-        tracing::info!(?key, ?value, "get");
+        tracing::info!(
+            key = ?String::from_utf8_lossy(key),
+            value = ?String::from_utf8_lossy(&value),
+            "get"
+        );
         Ok(value)
     }
 
     /// Sets keys in a buffer until commit time.
     pub async fn set(&mut self, key: &[u8], value: &[u8]) {
-        tracing::info!(?key, ?value, "set");
+        tracing::info!(
+            key = ?String::from_utf8_lossy(key),
+            value = ?String::from_utf8_lossy(value),
+            "set"
+        );
         self.write_set.insert(key.into(), value.into());
     }
 
