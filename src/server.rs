@@ -73,15 +73,15 @@ pub struct KvTable {
 }
 
 impl KvTable {
-    // Reads the latest key-value record from a specified column
-    // in MemoryStorage with a given key and a timestamp range.
+    /// Reads the latest key-value record from a specified column
+    /// in MemoryStorage with a given key and a timestamp range.
     #[inline]
     fn read(
         &self,
         key: Vec<u8>,
         column: Column,
         ts_range: impl RangeBounds<u64>,
-    ) -> Option<(&Key, &Value)> {
+    ) -> Option<(u64, &Value)> {
         let map = match column {
             Column::Write => &self.write,
             Column::Data => &self.data,
@@ -103,10 +103,12 @@ impl KvTable {
                 Bound::Unbounded => u64::MAX,
             },
         );
-        map.range(start..=end).next_back()
+        map.range(start..=end)
+            .next_back()
+            .map(|((_, ts), v)| (*ts, v))
     }
 
-    // Writes a record to a specified column in MemoryStorage.
+    /// Writes a record to a specified column in MemoryStorage.
     #[inline]
     fn write(&mut self, key: Vec<u8>, column: Column, ts: u64, value: Value) {
         let map = match column {
@@ -117,8 +119,8 @@ impl KvTable {
         map.insert((key, ts), value);
     }
 
+    /// Erases a record from a specified column in MemoryStorage.
     #[inline]
-    // Erases a record from a specified column in MemoryStorage.
     fn erase(&mut self, key: Vec<u8>, column: Column, commit_ts: u64) {
         let map = match column {
             Column::Write => &mut self.write,
@@ -126,6 +128,16 @@ impl KvTable {
             Column::Lock => &mut self.lock,
         };
         map.remove(&(key, commit_ts));
+    }
+
+    /// Finds the write record pointing to the specific timestamp.
+    /// Returns the commit timestamp.
+    #[inline]
+    fn find_write(&self, key: Vec<u8>, start_ts: u64) -> Option<u64> {
+        self.write
+            .range((key.clone(), 0)..=(key, u64::MAX))
+            .find(|(_, v)| v.as_ts() == start_ts)
+            .map(|((_, ts), _)| *ts)
     }
 }
 
@@ -181,11 +193,17 @@ pub struct MemoryStorage {
 impl MemoryStorage {
     #[rpc]
     async fn get(&self, req: GetRequest) -> Result<Option<Vec<u8>>, GetError> {
-        let table = self.table.lock().unwrap();
-        let lock = table.read(req.key.clone(), Column::Lock, ..=req.start_ts);
-        if let Some((&(_, ts), _)) = lock {
-            return Err(GetError::IsLocked { ts });
+        loop {
+            let lock_ts = (self.table.lock().unwrap())
+                .read(req.key.clone(), Column::Lock, ..=req.start_ts)
+                .map(|(ts, _)| ts);
+            if let Some(ts) = lock_ts {
+                self.back_off_maybe_clean_up_lock(req.key.clone(), ts).await;
+                continue;
+            }
+            break;
         }
+        let table = self.table.lock().unwrap();
         let ts = match table.read(req.key.clone(), Column::Write, ..=req.start_ts) {
             Some((_, v)) => v.as_ts(),
             None => return Ok(None),
@@ -202,11 +220,11 @@ impl MemoryStorage {
     async fn prewrite(&self, req: PrewriteRequest) -> Result<(), PrewriteError> {
         let mut table = self.table.lock().unwrap();
         let write = table.read(req.key.clone(), Column::Write, req.start_ts..);
-        if let Some((&(_, ts), _)) = write {
+        if let Some((ts, _)) = write {
             return Err(PrewriteError::WriteConflict { ts });
         }
         let lock = table.read(req.key.clone(), Column::Lock, ..);
-        if let Some((&(_, ts), _)) = lock {
+        if let Some((ts, _)) = lock {
             return Err(PrewriteError::IsLocked { ts });
         }
         table.write(
@@ -239,8 +257,25 @@ impl MemoryStorage {
         Ok(())
     }
 
-    fn back_off_maybe_clean_up_lock(&self, start_ts: u64, key: Vec<u8>) {
+    async fn back_off_maybe_clean_up_lock(&self, key: Vec<u8>, start_ts: u64) {
         // Your code here.
-        unimplemented!()
+        madsim::time::sleep(TTL).await;
+        let mut table = self.table.lock().unwrap();
+        let (lock_ts, primary) = match table.read(key.clone(), Column::Lock, ..=start_ts) {
+            Some((ts, v)) => (ts, v.as_bytes()),
+            None => return,
+        };
+        if let Some(commit_ts) = table.find_write(primary.to_vec(), lock_ts) {
+            tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery commit");
+            table.write(
+                key.clone(),
+                Column::Write,
+                commit_ts,
+                Value::Timestamp(lock_ts),
+            );
+        } else {
+            tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery rollback");
+        }
+        table.erase(key, Column::Lock, lock_ts);
     }
 }
