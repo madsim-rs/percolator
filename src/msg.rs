@@ -21,7 +21,7 @@ pub struct GetRequest {
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum GetError {
     #[error("key is locked by timestamp {ts}")]
-    IsLocked { ts: u64 },
+    IsLocked { ts: u64, primary: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Request)]
@@ -52,3 +52,21 @@ pub struct CommitRequest {
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum CommitError {}
+
+/// Check if the given key is committed. If so, return the commit timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize, Request)]
+#[rtype("Option<u64>")]
+pub struct CheckRequest {
+    pub key: Vec<u8>,
+    pub lock_ts: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Request)]
+#[rtype("Result<(), RollbackError>")]
+pub struct RollbackRequest {
+    pub key: Vec<u8>,
+    pub start_ts: u64,
+}
+
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+pub enum RollbackError {}

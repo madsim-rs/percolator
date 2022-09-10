@@ -8,11 +8,8 @@ edition = "2021"
 comfy-table = "6"
 futures = "0.3"
 itertools = "0.10"
-madsim = "0.2"
+madsim = "0.2.6"
 serde = { version = "1.0", features = ["derive"] }
 spin = "0.9"
 thiserror = "1"
 tracing = "0.1"
-
-[patch.crates-io]
-madsim = { path = "../madsim/madsim" }

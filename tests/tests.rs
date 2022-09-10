@@ -1,3 +1,5 @@
+#![cfg(madsim)]
+
 use madsim::{
     net::rpc::Request,
     runtime::{Handle, NodeHandle},
@@ -12,9 +14,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use crate::client::Client;
-use crate::msg;
-use crate::server::{MemoryStorage, TimestampOracle};
+use percolator::client::Client;
+use percolator::msg;
+use percolator::server::{MemoryStorage, TimestampOracle};
 
 struct Tester {
     clients: Vec<TestClient>,
@@ -108,7 +110,7 @@ impl Tester {
         net.clog_node(self.clients[i].node.id());
     }
 
-    fn drop_commit_primary_req(&self) {
+    fn drop_commit_primary_request(&self) {
         tracing::info!("set drop commit primary request");
         self.hooks.drop_primary_req.store(true, Ordering::Relaxed);
     }
@@ -121,6 +123,15 @@ impl Tester {
     fn drop_commit_response(&self) {
         tracing::info!("set drop commit response");
         self.hooks.drop_resp.store(true, Ordering::Relaxed);
+    }
+
+    fn reset_drop(&self) {
+        tracing::info!("reset drop commit request/response");
+        self.hooks.drop_primary_req.store(false, Ordering::Relaxed);
+        self.hooks
+            .drop_secondary_req
+            .store(false, Ordering::Relaxed);
+        self.hooks.drop_resp.store(false, Ordering::Relaxed);
     }
 }
 
@@ -428,6 +439,7 @@ async fn test_commit_primary_drop_secondary_reqs() {
     client0.set(b"5", b"50").await;
     t.drop_commit_secondary_request();
     assert_eq!(client0.commit().await.unwrap(), true);
+    t.reset_drop();
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -447,6 +459,7 @@ async fn test_commit_primary_success() {
     client0.set(b"5", b"50").await;
     t.drop_commit_secondary_request();
     assert_eq!(client0.commit().await.unwrap(), true);
+    t.reset_drop();
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -466,6 +479,7 @@ async fn test_commit_primary_success_without_response() {
     client0.set(b"5", b"50").await;
     t.drop_commit_response();
     assert!(client0.commit().await.is_err());
+    t.reset_drop();
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -484,8 +498,9 @@ async fn test_commit_primary_fail() {
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
     t.drop_commit_secondary_request();
-    t.drop_commit_primary_req();
-    assert_eq!(client0.commit().await.unwrap(), false);
+    t.drop_commit_primary_request();
+    assert!(client0.commit().await.is_err());
+    t.reset_drop();
 
     let mut client1 = t.client(1);
     client1.begin().await;

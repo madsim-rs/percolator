@@ -1,18 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::ops::{Bound, RangeBounds};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use itertools::Itertools;
 
 use crate::msg::*;
-
-// TTL is used for a lock key.
-// If the key's lifetime exceeds this value, it should be cleaned up.
-// Otherwise, the operation should back off.
-const TTL: Duration = Duration::from_millis(100);
 
 #[derive(Default, Clone)]
 pub struct TimestampOracle {
@@ -192,18 +186,12 @@ pub struct MemoryStorage {
 #[madsim::service]
 impl MemoryStorage {
     #[rpc]
-    async fn get(&self, req: GetRequest) -> Result<Option<Vec<u8>>, GetError> {
-        loop {
-            let lock_ts = (self.table.lock().unwrap())
-                .read(req.key.clone(), Column::Lock, ..=req.start_ts)
-                .map(|(ts, _)| ts);
-            if let Some(ts) = lock_ts {
-                self.back_off_maybe_clean_up_lock(req.key.clone(), ts).await;
-                continue;
-            }
-            break;
-        }
+    fn get(&self, req: GetRequest) -> Result<Option<Vec<u8>>, GetError> {
         let table = self.table.lock().unwrap();
+        if let Some((ts, primary)) = table.read(req.key.clone(), Column::Lock, ..=req.start_ts) {
+            let primary = primary.as_bytes().to_vec();
+            return Err(GetError::IsLocked { ts, primary });
+        }
         let ts = match table.read(req.key.clone(), Column::Write, ..=req.start_ts) {
             Some((_, v)) => v.as_ts(),
             None => return Ok(None),
@@ -217,14 +205,12 @@ impl MemoryStorage {
     }
 
     #[rpc]
-    async fn prewrite(&self, req: PrewriteRequest) -> Result<(), PrewriteError> {
+    fn prewrite(&self, req: PrewriteRequest) -> Result<(), PrewriteError> {
         let mut table = self.table.lock().unwrap();
-        let write = table.read(req.key.clone(), Column::Write, req.start_ts..);
-        if let Some((ts, _)) = write {
+        if let Some((ts, _)) = table.read(req.key.clone(), Column::Write, req.start_ts..) {
             return Err(PrewriteError::WriteConflict { ts });
         }
-        let lock = table.read(req.key.clone(), Column::Lock, ..);
-        if let Some((ts, _)) = lock {
+        if let Some((ts, _)) = table.read(req.key.clone(), Column::Lock, ..) {
             return Err(PrewriteError::IsLocked { ts });
         }
         table.write(
@@ -244,7 +230,7 @@ impl MemoryStorage {
     }
 
     #[rpc]
-    async fn commit(&self, req: CommitRequest) -> Result<(), CommitError> {
+    fn commit(&self, req: CommitRequest) -> Result<(), CommitError> {
         let mut table = self.table.lock().unwrap();
         table.write(
             req.key.clone(),
@@ -257,25 +243,17 @@ impl MemoryStorage {
         Ok(())
     }
 
-    async fn back_off_maybe_clean_up_lock(&self, key: Vec<u8>, start_ts: u64) {
-        // Your code here.
-        madsim::time::sleep(TTL).await;
+    #[rpc]
+    fn check(&self, req: CheckRequest) -> Option<u64> {
+        let table = self.table.lock().unwrap();
+        table.find_write(req.key, req.lock_ts)
+    }
+
+    #[rpc]
+    fn rollback(&self, req: RollbackRequest) -> Result<(), RollbackError> {
         let mut table = self.table.lock().unwrap();
-        let (lock_ts, primary) = match table.read(key.clone(), Column::Lock, ..=start_ts) {
-            Some((ts, v)) => (ts, v.as_bytes()),
-            None => return,
-        };
-        if let Some(commit_ts) = table.find_write(primary.to_vec(), lock_ts) {
-            tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery commit");
-            table.write(
-                key.clone(),
-                Column::Write,
-                commit_ts,
-                Value::Timestamp(lock_ts),
-            );
-        } else {
-            tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery rollback");
-        }
-        table.erase(key, Column::Lock, lock_ts);
+        table.erase(req.key, Column::Lock, req.start_ts);
+        tracing::debug!("rollback\n{}", table);
+        Ok(())
     }
 }

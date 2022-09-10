@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::io::Result;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -9,14 +8,14 @@ use madsim::net::Endpoint;
 
 use crate::msg::*;
 
-// BACKOFF_TIME_MS is the wait time before retrying to send the request.
+// BACKOFF_TIME is the wait time before retrying to send the request.
 // It should be exponential growth. e.g.
 // |  retry time  |  backoff time  |
 // |--------------|----------------|
-// |      1       |       100      |
-// |      2       |       200      |
-// |      3       |       400      |
-const BACKOFF_TIME_MS: u64 = 100;
+// |      1       |     100 ms     |
+// |      2       |     200 ms     |
+// |      3       |     400 ms     |
+const BACKOFF_TIME: Duration = Duration::from_millis(100);
 // RETRY_TIMES is the maximum number of times a client attempts to send a request.
 const RETRY_TIMES: usize = 3;
 
@@ -69,14 +68,45 @@ impl Client {
             start_ts: self.start_ts.expect("no transaction"),
             key: key.into(),
         };
-        let rsp = self.call_with_retry(self.txn_addr, req).await?;
-        let value = rsp.unwrap().unwrap_or_default();
-        tracing::info!(
-            key = ?String::from_utf8_lossy(key),
-            value = ?String::from_utf8_lossy(&value),
-            "get"
-        );
-        Ok(value)
+        loop {
+            let (lock_ts, primary) = match self.call_with_retry(self.txn_addr, req).await? {
+                Ok(value) => {
+                    let value = value.unwrap_or_default();
+                    tracing::info!(
+                        key = ?String::from_utf8_lossy(key),
+                        value = ?String::from_utf8_lossy(&value),
+                        "get"
+                    );
+                    return Ok(value);
+                }
+                Err(GetError::IsLocked { ts, primary }) => (ts, primary),
+            };
+            madsim::time::sleep(BACKOFF_TIME).await;
+            let req = || CheckRequest {
+                key: primary.clone(),
+                lock_ts,
+            };
+            match self.call_with_retry(self.txn_addr, req).await? {
+                Some(commit_ts) => {
+                    tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery commit");
+                    let req = || CommitRequest {
+                        is_primary: key == primary,
+                        key: key.into(),
+                        start_ts: lock_ts,
+                        commit_ts,
+                    };
+                    self.call_with_retry(self.txn_addr, req).await?.unwrap();
+                }
+                None => {
+                    tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery rollback");
+                    let req = || RollbackRequest {
+                        key: key.into(),
+                        start_ts: lock_ts,
+                    };
+                    self.call_with_retry(self.txn_addr, req).await?.unwrap();
+                }
+            }
+        }
     }
 
     /// Sets keys in a buffer until commit time.
@@ -120,7 +150,8 @@ impl Client {
         }
 
         // Commit phase
-        for (key, value) in &self.write_set {
+        let mut committed = false;
+        for key in self.write_set.keys() {
             let req = || CommitRequest {
                 start_ts,
                 commit_ts,
@@ -128,8 +159,9 @@ impl Client {
                 is_primary: key == primary_key,
             };
             match self.call_with_retry(self.txn_addr, req).await {
-                Err(_) | Ok(Err(_)) => return Ok(false),
-                _ => {}
+                Ok(Ok(())) => committed = true,
+                Err(e) if !committed => return Err(e),
+                Err(_) | Ok(Err(_)) => return Ok(true),
             }
         }
 
@@ -141,7 +173,7 @@ impl Client {
         F: FnMut() -> R,
         R: Request,
     {
-        let mut timeout = Duration::from_millis(BACKOFF_TIME_MS);
+        let mut timeout = BACKOFF_TIME;
         let mut last_err = None;
         for _ in 0..RETRY_TIMES {
             match self.ep.call_timeout(dst, request(), timeout).await {
