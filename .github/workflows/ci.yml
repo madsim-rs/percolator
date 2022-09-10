@@ -9,9 +9,9 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -28,16 +28,18 @@ jobs:
           command: clippy
 
   test:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: stable
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Test
         uses: actions-rs/cargo@v1
+        env:
+          RUSTFLAGS: --cfg madsim
         with:
           command: test
           args: --release --no-fail-fast
