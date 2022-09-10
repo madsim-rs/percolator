@@ -88,7 +88,7 @@ impl Client {
             };
             match self.call_with_retry(self.txn_addr, req).await? {
                 Some(commit_ts) => {
-                    tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery commit");
+                    tracing::debug!(key = ?String::from_utf8_lossy(key), lock_ts, "recovery commit");
                     let req = || CommitRequest {
                         is_primary: key == primary,
                         key: key.into(),
@@ -98,7 +98,7 @@ impl Client {
                     self.call_with_retry(self.txn_addr, req).await?.unwrap();
                 }
                 None => {
-                    tracing::debug!(key = ?String::from_utf8_lossy(&key), lock_ts, "recovery rollback");
+                    tracing::debug!(key = ?String::from_utf8_lossy(key), lock_ts, "recovery rollback");
                     let req = || RollbackRequest {
                         key: key.into(),
                         start_ts: lock_ts,

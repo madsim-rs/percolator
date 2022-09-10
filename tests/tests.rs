@@ -32,11 +32,11 @@ struct CommitHooks {
 
 impl CommitHooks {
     fn hook_req(&self, req: &msg::CommitRequest) -> bool {
-        if self.drop_secondary_req.load(Ordering::Relaxed) {
-            if !req.is_primary || self.drop_primary_req.load(Ordering::Relaxed) {
-                tracing::debug!("drop a commit request");
-                return false;
-            }
+        if self.drop_secondary_req.load(Ordering::Relaxed)
+            && (!req.is_primary || self.drop_primary_req.load(Ordering::Relaxed))
+        {
+            tracing::debug!("drop a commit request");
+            return false;
         }
         true
     }
@@ -221,7 +221,7 @@ async fn test_predicate_many_preceders_read_predicates() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -230,7 +230,7 @@ async fn test_predicate_many_preceders_read_predicates() {
     let mut client2 = t.client(2);
     client2.begin().await;
     client2.set(b"3", b"30").await;
-    assert_eq!(client2.commit().await.unwrap(), true);
+    assert!(client2.commit().await.unwrap());
 
     assert_eq!(client1.get(b"3").await.unwrap(), b"");
 }
@@ -244,7 +244,7 @@ async fn test_predicate_many_preceders_write_predicates() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -257,8 +257,8 @@ async fn test_predicate_many_preceders_write_predicates() {
     assert_eq!(client1.get(b"2").await.unwrap(), b"20");
 
     client2.set(b"2", b"40").await;
-    assert_eq!(client1.commit().await.unwrap(), true);
-    assert_eq!(client2.commit().await.unwrap(), false);
+    assert!(client1.commit().await.unwrap());
+    assert!(!client2.commit().await.unwrap());
 }
 
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#lost-update-p4
@@ -270,7 +270,7 @@ async fn test_lost_update() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -283,8 +283,8 @@ async fn test_lost_update() {
 
     client1.set(b"1", b"11").await;
     client2.set(b"1", b"11").await;
-    assert_eq!(client1.commit().await.unwrap(), true);
-    assert_eq!(client2.commit().await.unwrap(), false);
+    assert!(client1.commit().await.unwrap());
+    assert!(!client2.commit().await.unwrap());
 }
 
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#read-skew-g-single
@@ -296,7 +296,7 @@ async fn test_read_skew_read_only() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -310,7 +310,7 @@ async fn test_read_skew_read_only() {
 
     client2.set(b"1", b"12").await;
     client2.set(b"2", b"18").await;
-    assert_eq!(client2.commit().await.unwrap(), true);
+    assert!(client2.commit().await.unwrap());
 
     assert_eq!(client1.get(b"2").await.unwrap(), b"20");
 }
@@ -324,7 +324,7 @@ async fn test_read_skew_predicate_dependencies() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -336,7 +336,7 @@ async fn test_read_skew_predicate_dependencies() {
     assert_eq!(client1.get(b"2").await.unwrap(), b"20");
 
     client2.set(b"3", b"30").await;
-    assert_eq!(client2.commit().await.unwrap(), true);
+    assert!(client2.commit().await.unwrap());
 
     assert_eq!(client1.get(b"3").await.unwrap(), b"");
 }
@@ -350,7 +350,7 @@ async fn test_read_skew_write_predicate() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -364,10 +364,10 @@ async fn test_read_skew_write_predicate() {
 
     client2.set(b"1", b"12").await;
     client2.set(b"2", b"18").await;
-    assert_eq!(client2.commit().await.unwrap(), true);
+    assert!(client2.commit().await.unwrap());
 
     client1.set(b"2", b"30").await;
-    assert_eq!(client1.commit().await.unwrap(), false);
+    assert!(!client1.commit().await.unwrap());
 }
 
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#write-skew-g2-item
@@ -379,7 +379,7 @@ async fn test_write_skew() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -395,8 +395,8 @@ async fn test_write_skew() {
     client1.set(b"1", b"11").await;
     client2.set(b"2", b"21").await;
 
-    assert_eq!(client1.commit().await.unwrap(), true);
-    assert_eq!(client2.commit().await.unwrap(), true);
+    assert!(client1.commit().await.unwrap());
+    assert!(client2.commit().await.unwrap());
 }
 
 // https://github.com/ept/hermitage/blob/master/sqlserver.md#anti-dependency-cycles-g2
@@ -408,7 +408,7 @@ async fn test_anti_dependency_cycles() {
     client0.begin().await;
     client0.set(b"1", b"10").await;
     client0.set(b"2", b"20").await;
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
 
     let mut client1 = t.client(1);
     client1.begin().await;
@@ -419,8 +419,8 @@ async fn test_anti_dependency_cycles() {
     client1.set(b"3", b"30").await;
     client2.set(b"4", b"42").await;
 
-    assert_eq!(client1.commit().await.unwrap(), true);
-    assert_eq!(client2.commit().await.unwrap(), true);
+    assert!(client1.commit().await.unwrap());
+    assert!(client2.commit().await.unwrap());
 
     let mut client3 = t.client(3);
     client3.begin().await;
@@ -438,7 +438,7 @@ async fn test_commit_primary_drop_secondary_reqs() {
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
     t.drop_commit_secondary_request();
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
     t.reset_drop();
 
     let mut client1 = t.client(1);
@@ -458,7 +458,7 @@ async fn test_commit_primary_success() {
     client0.set(b"4", b"40").await;
     client0.set(b"5", b"50").await;
     t.drop_commit_secondary_request();
-    assert_eq!(client0.commit().await.unwrap(), true);
+    assert!(client0.commit().await.unwrap());
     t.reset_drop();
 
     let mut client1 = t.client(1);

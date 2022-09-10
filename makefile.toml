@@ -2,3 +2,8 @@
 env = { "RUSTFLAGS" = "--cfg madsim", "CARGO_TARGET_DIR" = "target/sim" }
 command = "cargo"
 args = ["test", "${@}"]
+
+[tasks.sclippy]
+env = { "RUSTFLAGS" = "--cfg madsim", "CARGO_TARGET_DIR" = "target/sim" }
+command = "cargo"
+args = ["clippy", "--all-targets", "${@}"]

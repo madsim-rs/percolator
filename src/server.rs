@@ -26,7 +26,7 @@ impl TimestampOracle {
 // Key is a tuple (raw key, timestamp).
 pub type Key = (Vec<u8>, u64);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Value {
     Timestamp(u64),
     Vector(Vec<u8>),
@@ -154,7 +154,7 @@ impl Display for KvTable {
             let value_to_string = |ts: u64, v: Option<&Value>| match v {
                 Some(Value::Timestamp(t)) => format!("{ts}: data@{t}"),
                 Some(Value::Vector(v)) => format!("{ts}: {}", String::from_utf8_lossy(v)),
-                None => format!(""),
+                None => String::new(),
             };
             table.add_row(vec![
                 String::from_utf8_lossy(key).to_string(),
